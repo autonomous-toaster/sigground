@@ -247,20 +247,29 @@ fn extract_task_id(text: &str) -> (String, String) {
     }
 
     // Try T-prefixed: "T1.3" → id="1.3"
+    // Also handles parenthetical: "(T1.3)" → id="1.3"
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'T' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+        // Skip opening parenthesis before T
+        let start_t = if i + 1 < bytes.len() && bytes[i] == b'(' && bytes[i + 1] == b'T' {
+            i + 2
+        } else if bytes[i] == b'T' {
+            i + 1
+        } else {
             i += 1;
-            let start = i;
-            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
-                i += 1;
-            }
-            if let Ok(s) = std::str::from_utf8(&bytes[start..i]) {
-                return (s.to_string(), text[start..i].to_string());
-            }
+            continue;
+        };
+        let start = start_t;
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            end += 1;
         }
-        i += 1;
+        if end > start
+            && let Ok(s) = std::str::from_utf8(&bytes[start..end]) {
+                return (s.to_string(), text[start..end].to_string());
+            }
+        i = end;
     }
 
     (String::new(), String::new())
@@ -295,6 +304,19 @@ mod tests {
     fn test_extract_task_id_multi_dot() {
         let (id, desc) = extract_task_id("T10.7 test visualize");
         assert_eq!(id, "10.7");
+    }
+
+    #[test]
+    fn test_extract_task_id_parenthetical() {
+        let (id, desc) = extract_task_id("add connection pooling (T1.3)");
+        assert_eq!(id, "1.3");
+        assert_eq!(desc, "1.3");
+    }
+
+    #[test]
+    fn test_extract_task_id_parenthetical_multi() {
+        let (id, desc) = extract_task_id("setup (T1.1) before migration (T2.1)");
+        assert_eq!(id, "1.1");
     }
 
     #[test]

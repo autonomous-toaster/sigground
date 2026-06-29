@@ -390,6 +390,20 @@ fn generate_directives(
             let best = &result.candidates[0];
             let mut dirs = Vec::new();
 
+            // Check for BEFORE with only one argument — common mistake
+            if best.predicate == "BEFORE" && best.arguments.len() < 2 {
+                dirs.push(Directive {
+                    severity: "warning".to_string(),
+                    element: stmt.source.clone(),
+                    detail: format!(
+                        "BEFORE requires two task IDs, but only '{}' was found.",
+                        best.arguments.first().map(|s| s.as_str()).unwrap_or("?"),
+                    ),
+                    suggested_action: "Add a second task ID after 'BEFORE'. Example: 'T2.1 SHALL complete BEFORE T3.1 SHALL run'.".to_string(),
+                    close_matches: None,
+                });
+            }
+
             // Find which arguments were matched via alias vs exact name
             for (i, arg) in best.arguments.iter().enumerate() {
                 if !stmt.text.contains(arg)
@@ -462,23 +476,36 @@ fn generate_directives(
     }
 }
 
-/// Find close matches for ungroundable text by comparing against constant aliases.
+/// Find close matches for ungroundable text by comparing against constant names and aliases.
 fn find_close_matches(text: &str, sig: &types::Signature) -> Vec<CloseMatch> {
     let lower = text.to_lowercase();
     let mut matches: Vec<CloseMatch> = sig
         .constants
         .iter()
         .filter_map(|c| {
-            let best = c
+            // Compare against the constant name itself (e.g., "T1.3")
+            let name_score = strsim(&lower, &c.name.to_lowercase());
+            // Compare against all aliases
+            let best_alias = c
                 .aliases
                 .iter()
                 .map(|a| (a, strsim(&lower, a)))
                 .max_by(|(_, s1), (_, s2)| s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal));
-            best.filter(|(_, score)| *score > 0.4).map(|(alias, score)| CloseMatch {
-                constant: c.name.clone(),
-                alias: alias.clone(),
-                similarity: score,
-            })
+
+            let (best_alias_str, best_alias_score) = match best_alias {
+                Some((a, s)) if s > name_score => (a.clone(), s),
+                _ => (c.name.clone(), name_score),
+            };
+
+            if best_alias_score > 0.4 {
+                Some(CloseMatch {
+                    constant: c.name.clone(),
+                    alias: best_alias_str,
+                    similarity: best_alias_score,
+                })
+            } else {
+                None
+            }
         })
         .collect();
     matches.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
@@ -796,5 +823,54 @@ mod tests {
         let dirs = generate_directives(&result, &stmt, &sig);
         assert!(!dirs.is_empty());
         assert_eq!(dirs[0].severity, "warning");
+    }
+
+    #[test]
+    fn test_find_close_matches_by_constant_name() {
+        let sig = Signature {
+            types: vec![TypeDef { name: "task_id".into() }],
+            predicates: vec![],
+            constants: vec![
+                ConstantDef {
+                    name: "T1.3".into(),
+                    type_name: "task_id".into(),
+                    aliases: vec!["implement appconfig".into()],
+                },
+            ],
+        };
+        // The text "T1.3" should match the constant name directly
+        let matches = find_close_matches("T1.3", &sig);
+        assert!(!matches.is_empty());
+        assert!(matches.iter().any(|m| m.constant == "T1.3"));
+    }
+
+    #[test]
+    fn test_generate_directives_before_one_arg() {
+        let result = GroundingResult {
+            candidates: vec![GroundedAtom {
+                predicate: "BEFORE".into(),
+                arguments: vec!["T3.1".into()],
+                confidence: 0.5,
+            }],
+            status: GroundingStatus::Ambiguous,
+        };
+        let stmt = Statement {
+            source: "test.md#L1".into(),
+            text: "T3.1 SHALL complete before any pool is used".into(),
+        };
+        let sig = Signature {
+            types: vec![TypeDef { name: "task_id".into() }],
+            predicates: vec![],
+            constants: vec![
+                ConstantDef {
+                    name: "T3.1".into(),
+                    type_name: "task_id".into(),
+                    aliases: vec!["setup".into()],
+                },
+            ],
+        };
+        let dirs = generate_directives(&result, &stmt, &sig);
+        assert!(!dirs.is_empty());
+        assert!(dirs.iter().any(|d| d.detail.contains("BEFORE requires two")));
     }
 }
