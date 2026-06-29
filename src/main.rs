@@ -65,21 +65,38 @@ fn main() -> anyhow::Result<()> {
 
 fn run_check(change: Option<String>, format: &str, stdin: bool) -> anyhow::Result<()> {
     let project_root = std::env::current_dir()?;
+    let changes = resolve_changes(change.as_deref(), &project_root, stdin)?;
 
-    // Resolve the change directory
-    let (change_dir, change_name) = resolve_change(change.as_deref(), &project_root, stdin)?;
+    let mut all_outputs = Vec::new();
+    for (change_dir, change_name) in &changes {
+        let output = check_single(change_dir, change_name)?;
+        all_outputs.push(output);
+    }
 
-    // Parse tasks.md → signature
+    // Merge outputs
+    let merged = merge_outputs(&all_outputs);
+    let has_issues = merged.summary.ungroundable > 0 || merged.summary.ambiguous > 0;
+
+    if has_issues {
+        match format {
+            "json" => println!("{}", serde_json::to_string_pretty(&merged)?),
+            _ => print_human(&merged),
+        }
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn check_single(change_dir: &std::path::Path, change_name: &str) -> anyhow::Result<CheckOutput> {
     let tasks_path = change_dir.join("tasks.md");
     let tasks_source = std::fs::read_to_string(&tasks_path)
         .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", tasks_path.display(), e))?;
     let sig = parse::signature_from_tasks(&tasks_source, &tasks_path)?;
 
-    // Parse specs → NL statements
     let specs_dir = change_dir.join("specs");
     let statements = parse_specs(&specs_dir)?;
 
-    // Ground each statement
     let grounder = grounders::RuleGrounder;
     let mut inputs = Vec::new();
     for stmt in &statements {
@@ -101,30 +118,58 @@ fn run_check(change: Option<String>, format: &str, stdin: bool) -> anyhow::Resul
         ungroundable: inputs.iter().filter(|i| i.status == GroundingStatus::Ungroundable).count(),
     };
 
-    let output = CheckOutput {
-        plan_name: change_name,
+    Ok(CheckOutput {
+        plan_name: change_name.to_string(),
         signature: sig.summary(),
         inputs,
         summary,
-    };
+    })
+}
 
-    let has_issues = output.summary.ungroundable > 0 || output.summary.ambiguous > 0;
-
-    // Only output on error. Success is quiet — just exit 0.
-    if has_issues {
-        match format {
-            "json" => println!("{}", serde_json::to_string_pretty(&output)?),
-            _ => print_human(&output),
-        }
-        std::process::exit(1);
+fn merge_outputs(outputs: &[CheckOutput]) -> CheckOutput {
+    if outputs.is_empty() {
+        return CheckOutput {
+            plan_name: String::new(),
+            signature: types::SignatureSummary { tasks: 0, predicates: 0, types: 0 },
+            inputs: vec![],
+            summary: CheckSummary { total: 0, grounded: 0, ambiguous: 0, ungroundable: 0 },
+        };
+    }
+    if outputs.len() == 1 {
+        return outputs[0].clone();
     }
 
-    Ok(())
+    let names: Vec<&str> = outputs.iter().map(|o| o.plan_name.as_str()).collect();
+    let mut all_inputs = Vec::new();
+    let mut total = 0;
+    let mut grounded = 0;
+    let mut ambiguous = 0;
+    let mut ungroundable = 0;
+
+    for o in outputs {
+        for input in &o.inputs {
+            let mut prefixed = input.clone();
+            prefixed.source = format!("{}: {}", o.plan_name, prefixed.source);
+            all_inputs.push(prefixed);
+        }
+        total += o.summary.total;
+        grounded += o.summary.grounded;
+        ambiguous += o.summary.ambiguous;
+        ungroundable += o.summary.ungroundable;
+    }
+
+    CheckOutput {
+        plan_name: names.join(", "),
+        signature: types::SignatureSummary { tasks: 0, predicates: 0, types: 0 },
+        inputs: all_inputs,
+        summary: CheckSummary { total, grounded, ambiguous, ungroundable },
+    }
 }
 
 fn run_signature(change: Option<String>, stdin: bool) -> anyhow::Result<()> {
     let project_root = std::env::current_dir()?;
-    let (change_dir, _) = resolve_change(change.as_deref(), &project_root, stdin)?;
+    let changes = resolve_changes(change.as_deref(), &project_root, stdin)?;
+    let (change_dir, _) = &changes[0];
 
     let tasks_path = change_dir.join("tasks.md");
     let tasks_source = std::fs::read_to_string(&tasks_path)
@@ -137,11 +182,11 @@ fn run_signature(change: Option<String>, stdin: bool) -> anyhow::Result<()> {
 
 // ── Input resolution ──
 
-fn resolve_change(
+fn resolve_changes(
     change: Option<&str>,
     project_root: &Path,
     stdin: bool,
-) -> anyhow::Result<(std::path::PathBuf, String)> {
+) -> anyhow::Result<Vec<(std::path::PathBuf, String)>> {
     if stdin {
         anyhow::bail!("stdin mode not yet implemented");
     }
@@ -151,7 +196,7 @@ fn resolve_change(
             // Try as a change name in openspec/changes/<name>
             let as_change = project_root.join("openspec").join("changes").join(name);
             if as_change.join("tasks.md").exists() {
-                return Ok((as_change, name.to_string()));
+                return Ok(vec![(as_change, name.to_string())]);
             }
             // Try as a direct path
             let as_path = Path::new(name);
@@ -161,12 +206,26 @@ fn resolve_change(
                     .and_then(|s| s.to_str())
                     .unwrap_or(name)
                     .to_string();
-                return Ok((as_path.to_path_buf(), label));
+                return Ok(vec![(as_path.to_path_buf(), label)]);
+            }
+            // Try as a changes directory (contains subdirs with tasks.md)
+            if as_path.is_dir() {
+                let mut changes: Vec<_> = std::fs::read_dir(as_path)
+                    .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", as_path.display(), e))?
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .filter(|e| e.path().join("tasks.md").exists())
+                    .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
+                    .collect();
+                changes.sort_by(|a, b| a.1.cmp(&b.1));
+                if !changes.is_empty() {
+                    return Ok(changes);
+                }
             }
             anyhow::bail!("Change '{}' not found (no tasks.md)", name);
         }
         None => {
-            // Auto-detect: look for openspec/changes/ with a single change
+            // Auto-detect: return ALL changes in openspec/changes/
             let changes_dir = project_root.join("openspec").join("changes");
             if changes_dir.exists() {
                 let mut changes: Vec<_> = std::fs::read_dir(&changes_dir)
@@ -174,20 +233,13 @@ fn resolve_change(
                     .filter_map(|e| e.ok())
                     .filter(|e| e.path().is_dir())
                     .filter(|e| e.path().join("tasks.md").exists())
-                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
                     .collect();
-                changes.sort();
-                if changes.len() == 1 {
-                    let name = changes.remove(0);
-                    return Ok((changes_dir.join(&name), name));
-                }
+                changes.sort_by(|a, b| a.1.cmp(&b.1));
                 if changes.is_empty() {
                     anyhow::bail!("No changes found in {}", changes_dir.display());
                 }
-                anyhow::bail!(
-                    "Multiple changes found: {}. Specify one with `sigground check <name>`",
-                    changes.join(", ")
-                );
+                return Ok(changes);
             }
             anyhow::bail!("No openspec/changes/ directory found");
         }
