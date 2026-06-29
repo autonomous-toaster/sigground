@@ -459,41 +459,32 @@ fn strsim(a: &str, b: &str) -> f64 {
 }
 
 // ── Human-readable output ──
+// Grouped: successes first (quiet), then errors (loud).
 
 fn print_human(output: &CheckOutput) {
-    println!("sigground check: {}", output.plan_name);
-    println!("{}", "-".repeat(55));
-    println!(
-        "Signature: {} tasks, {} predicates, {} types",
-        output.signature.tasks, output.signature.predicates, output.signature.types
-    );
-    println!("Specs:     {} requirement statements", output.summary.total);
-    println!();
-
+    // Pass 1: successes — quiet one-liners
     for input in &output.inputs {
-        let icon = match input.status {
-            GroundingStatus::Grounded => "✓",
-            GroundingStatus::Ambiguous => "⚠",
-            GroundingStatus::Ungroundable => "✗",
-        };
-        println!(" {} {}", icon, input.source);
-        println!("   \"{}\"", input.text);
+        if input.status != GroundingStatus::Grounded {
+            continue;
+        }
+        if let Some(g) = input.groundings.first() {
+            println!(
+                "\u{2713} {} \u{2192} {}({})",
+                input.source, g.predicate, g.arguments.join(", ")
+            );
+        }
+    }
 
+    // Pass 2: errors — loud with full details
+    for input in &output.inputs {
         match input.status {
-            GroundingStatus::Grounded => {
-                if let Some(g) = input.groundings.first() {
-                    println!(
-                        "   → {}({}) @ {:.2}",
-                        g.predicate,
-                        g.arguments.join(", "),
-                        g.confidence
-                    );
-                }
-            }
+            GroundingStatus::Grounded => {}
             GroundingStatus::Ambiguous => {
+                println!("\u{26A0} {}", input.source);
+                println!("   \"{}\"", input.text);
                 if let Some(g) = input.groundings.first() {
                     println!(
-                        "   → {}({}) @ {:.2}",
+                        "   \u{2192} {}({}) @ {:.2}",
                         g.predicate,
                         g.arguments.join(", "),
                         g.confidence
@@ -504,6 +495,8 @@ fn print_human(output: &CheckOutput) {
                 }
             }
             GroundingStatus::Ungroundable => {
+                println!("\u{2717} {}", input.source);
+                println!("   \"{}\"", input.text);
                 for d in &input.directives {
                     println!("   {}", d.detail);
                     if let Some(matches) = &d.close_matches
@@ -521,20 +514,18 @@ fn print_human(output: &CheckOutput) {
                 }
             }
         }
-        println!();
     }
 
-    println!(
-        "Summary: {} total | {} grounded | {} ambiguous | {} ungroundable",
-        output.summary.total,
-        output.summary.grounded,
-        output.summary.ambiguous,
-        output.summary.ungroundable
-    );
-    if output.summary.ungroundable > 0 || output.summary.ambiguous > 0 {
-        println!("Exit:    1 (fix ambiguous/ungroundable specs and re-run)");
-    } else {
-        println!("Exit:    0 (all grounded)");
+    // Summary line only if there are issues
+    let has_issues = output.summary.ungroundable > 0 || output.summary.ambiguous > 0;
+    if has_issues {
+        println!(
+            "Summary: {} total | {} grounded | {} ambiguous | {} ungroundable",
+            output.summary.total,
+            output.summary.grounded,
+            output.summary.ambiguous,
+            output.summary.ungroundable
+        );
     }
 }
 

@@ -6,6 +6,10 @@
 - [x] 1.4 Configure .cargo/config.toml with RUST_BACKTRACE=0, RUST_LOG=error, incremental build
 - [x] 1.5 Create module structure: `parse/`, `grounders/`, `types.rs`, `main.rs`
 
+## 9. Documentation
+
+- [x] 9.1 Write README.md with paper reference, veriplan comparison, usage, output format
+
 ## 2. Core Types
 
 - [x] 2.1 Define Signature struct with types, predicates, constants
