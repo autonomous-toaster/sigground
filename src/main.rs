@@ -361,18 +361,29 @@ fn extract_requirements(source: &str, rel_path: &str, out: &mut Vec<Statement>) 
 /// Avoids splitting on periods within task IDs (e.g., "T3.1").
 fn extract_shall(body: &str) -> String {
     // Split on sentence boundaries: ". " (period+space), "! ", "? ", or end of string.
-    // This avoids splitting on periods inside task IDs like "T3.1".
+    // Skip periods that are part of task IDs like "T2.1 " (digit.space → not a sentence end).
     let sentences: Vec<&str> = body
         .split(['!', '?'])
         .flat_map(|part| {
-            // Further split on ". " but not on standalone "."
             let mut result = Vec::new();
             let mut start = 0;
             let bytes = part.as_bytes();
-            for i in 0..part.len().saturating_sub(1) {
+            let len = part.len();
+            let mut i = 0;
+            while i < len.saturating_sub(1) {
                 if bytes[i] == b'.' && bytes[i + 1] == b' ' {
-                    result.push(&part[start..i]);
-                    start = i + 2;
+                    // Check if this period is part of a task ID (digit before, digit after space)
+                    let is_task_id = i > 0
+                        && bytes[i - 1].is_ascii_digit()
+                        && i + 2 < len
+                        && bytes[i + 2].is_ascii_digit();
+                    if !is_task_id {
+                        result.push(&part[start..i]);
+                        start = i + 2;
+                    }
+                    i += 1;
+                } else {
+                    i += 1;
                 }
             }
             result.push(&part[start..]);
