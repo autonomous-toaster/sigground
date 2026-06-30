@@ -68,6 +68,13 @@ fn run_check(change: Option<String>, format: &str, stdin: bool) -> anyhow::Resul
     let changes = resolve_changes(change.as_deref(), &project_root, stdin)?;
 
     let mut all_outputs = Vec::new();
+
+    if changes.is_empty() {
+        // No changes found — warn on stderr, exit 0
+        eprintln!("No active changes found.");
+        return Ok(());
+    }
+
     for (change_dir, change_name) in &changes {
         let output = check_single(change_dir, change_name)?;
         all_outputs.push(output);
@@ -208,6 +215,19 @@ fn resolve_changes(
                     .to_string();
                 return Ok(vec![(as_path.to_path_buf(), label)]);
             }
+            // Try as a project root with openspec/changes/
+            let changes_dir = as_path.join("openspec").join("changes");
+            if changes_dir.exists() {
+                let mut changes: Vec<_> = std::fs::read_dir(&changes_dir)
+                    .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", changes_dir.display(), e))?
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .filter(|e| e.path().join("tasks.md").exists())
+                    .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
+                    .collect();
+                changes.sort_by(|a, b| a.1.cmp(&b.1));
+                return Ok(changes); // empty vec is valid
+            }
             // Try as a changes directory (contains subdirs with tasks.md)
             if as_path.is_dir() {
                 let mut changes: Vec<_> = std::fs::read_dir(as_path)
@@ -236,12 +256,9 @@ fn resolve_changes(
                     .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
                     .collect();
                 changes.sort_by(|a, b| a.1.cmp(&b.1));
-                if changes.is_empty() {
-                    anyhow::bail!("No changes found in {}", changes_dir.display());
-                }
-                return Ok(changes);
+                return Ok(changes); // empty vec is valid — caller handles it
             }
-            anyhow::bail!("No openspec/changes/ directory found");
+            Ok(vec![])// no openspec/changes/ — empty is valid
         }
     }
 }
