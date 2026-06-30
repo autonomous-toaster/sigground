@@ -1,15 +1,15 @@
-//! sigground — Ground Natural Language Into System Signatures for Temporal Logic.
+//! groundcontrol — Ground Natural Language Into System Signatures for Temporal Logic.
 //!
 //! Standalone CLI that parses OpenSpec plans and checks whether NL requirement
 //! statements can be grounded to the plan's task vocabulary.
 //!
 //! Usage:
-//!   sigground check <change-name>        # by name (openspec/changes/<name>)
-//!   sigground check ./path/to/change     # by path
-//!   sigground check                      # auto-detect
-//!   sigground check --stdin             # read plan from stdin
+//!   groundcontrol check <change-name>        # by name (openspec/changes/<name>)
+//!   groundcontrol check ./path/to/change     # by path
+//!   groundcontrol check                      # auto-detect
+//!   groundcontrol check --stdin             # read plan from stdin
 //!
-//!   sigground signature <change-name>    # just emit the signature JSON
+//!   groundcontrol signature <change-name>    # just emit the signature JSON
 
 mod grounders;
 mod parse;
@@ -23,7 +23,7 @@ use types::{
 };
 
 #[derive(Parser)]
-#[command(name = "sigground", about = "Ground NL into system signatures for temporal logic")]
+#[command(name = "groundcontrol", about = "Ground NL into system signatures for temporal logic")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -50,6 +50,12 @@ enum Commands {
         #[arg(long)]
         stdin: bool,
     },
+    /// Initialize openspec/config.yaml with grounding rules
+    Init {
+        /// Project root directory (default: current dir)
+        #[arg(long)]
+        project_root: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -58,6 +64,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Check { change, format, stdin } => run_check(change, &format, stdin)?,
         Commands::Signature { change, stdin } => run_signature(change, stdin)?,
+        Commands::Init { project_root } => run_init(project_root)?,
     }
 
     Ok(())
@@ -636,14 +643,64 @@ fn print_human(output: &CheckOutput) {
     }
 }
 
+// ── Init command ──
+
+/// Marker comment checked before appending grounding rules.
+const GROUNDCONTROL_MARKER: &str = "# groundcontrol init";
+
+/// Config content to write when openspec/config.yaml does not exist.
+const BOOTSTRAP_CONFIG: &str = "schema: spec-driven\n\n# groundcontrol init\ncontext: |-\n  groundcontrol checks that NL requirement statements can be grounded to the plan's\n  task vocabulary. Every task reference in a spec MUST map to a real task ID.\n  Use explicit N.M IDs (e.g. 'T2.1') — not descriptions like 'the migration step'.\n  Task descriptions in tasks.md become aliases for fuzzy matching, so write\n  descriptive descriptions that capture the task's purpose.\n\nrules:\n  specs:\n    - \"Reference tasks by explicit ID: 'T2.1' not 'the migration step'\"\n    - \"Use parenthetical syntax for task IDs: 'the migration step (T2.1)'\"\n    - \"BEFORE requires two task IDs: 'T2.1 SHALL complete BEFORE T3.1 SHALL run'\"\n    - \"ALWAYS requires one task ID: 'ALWAYS T2.1 SHALL validate input'\"\n  tasks:\n    - \"Write descriptive task descriptions — they become aliases for grounding\"\n";
+
+/// Suffix appended to existing config when the marker is absent.
+const BOOTSTRAP_SUFFIX: &str = "\n\n# groundcontrol init\ncontext: |-\n  groundcontrol checks that NL requirement statements can be grounded to the plan's\n  task vocabulary. Every task reference in a spec MUST map to a real task ID.\n  Use explicit N.M IDs (e.g. 'T2.1') — not descriptions like 'the migration step'.\n  Task descriptions in tasks.md become aliases for fuzzy matching, so write\n  descriptive descriptions that capture the task's purpose.\n\nrules:\n  specs:\n    - \"Reference tasks by explicit ID: 'T2.1' not 'the migration step'\"\n    - \"Use parenthetical syntax for task IDs: 'the migration step (T2.1)'\"\n    - \"BEFORE requires two task IDs: 'T2.1 SHALL complete BEFORE T3.1 SHALL run'\"\n    - \"ALWAYS requires one task ID: 'ALWAYS T2.1 SHALL validate input'\"\n  tasks:\n    - \"Write descriptive task descriptions — they become aliases for grounding\"\n";
+
+fn run_init(project_root: Option<String>) -> anyhow::Result<()> {
+    let root = match project_root {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let config_path = root.join("openspec").join("config.yaml");
+    merge_config(&config_path)?;
+    println!("✓ groundcontrol init: {}", config_path.display());
+    Ok(())
+}
+
+/// Read openspec/config.yaml, check for GROUNDCONTROL_MARKER, append BOOTSTRAP_SUFFIX if missing.UFFIX if missing.
+/// If the file does not exist, create it with BOOTSTRAP_CONFIG.
+fn merge_config(path: &std::path::Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        // Create parent directory if needed
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, BOOTSTRAP_CONFIG)?;
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    if content.contains(GROUNDCONTROL_MARKER) {
+        // Marker present — no-op
+        return Ok(());
+    }
+
+    // Append suffix (ensure trailing newline before appending)
+    let trimmed = content.trim_end();
+    let new_content = if trimmed.is_empty() {
+        BOOTSTRAP_SUFFIX.to_string()
+    } else {
+        format!("{}\n{}", trimmed, BOOTSTRAP_SUFFIX)
+    };
+    std::fs::write(path, new_content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{
-        CheckOutput, CheckSummary, CloseMatch, ConstantDef, GroundedAtom, GroundingResult,
-        GroundingStatus, Signature, SignatureSummary, TypeDef,
+        ConstantDef, GroundedAtom, GroundingResult,
+        GroundingStatus, Signature, TypeDef,
     };
-    use crate::GroundingStatus as GS;
 
     #[test]
     fn test_strsim_identical() {
@@ -900,5 +957,69 @@ mod tests {
         let dirs = generate_directives(&result, &stmt, &sig);
         assert!(!dirs.is_empty());
         assert!(dirs.iter().any(|d| d.detail.contains("BEFORE requires two")));
+    }
+
+    // ── Init command tests ──
+
+    #[test]
+    fn test_merge_config_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openspec").join("config.yaml");
+        assert!(!path.exists());
+        merge_config(&path).unwrap();
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(GROUNDCONTROL_MARKER));
+        assert!(content.contains("Reference tasks by explicit ID"));
+        assert!(content.contains("Write descriptive task descriptions"));
+    }
+
+    #[test]
+    fn test_merge_config_marker_present_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openspec").join("config.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Write a config that already has the marker
+        let existing = "schema: spec-driven\n\n# groundcontrol init\ncontext: |-\n  existing rules\n";
+        std::fs::write(&path, existing).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        merge_config(&path).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn test_merge_config_appends_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openspec").join("config.yaml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let existing = "schema: spec-driven\n";
+        std::fs::write(&path, existing).unwrap();
+        merge_config(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(GROUNDCONTROL_MARKER));
+        assert!(content.contains("Reference tasks by explicit ID"));
+        assert!(content.contains("Write descriptive task descriptions"));
+        // Original content preserved
+        assert!(content.starts_with("schema: spec-driven"));
+    }
+
+    #[test]
+    fn test_merge_config_rules_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openspec").join("config.yaml");
+        merge_config(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Context block
+        assert!(content.contains("groundcontrol checks that NL requirement statements"));
+        assert!(content.contains("Use explicit N.M IDs"));
+        assert!(content.contains("descriptive descriptions that capture the task's purpose"));
+        // Specs rules
+        assert!(content.contains("Reference tasks by explicit ID"));
+        assert!(content.contains("Use parenthetical syntax"));
+        assert!(content.contains("BEFORE requires two task IDs"));
+        assert!(content.contains("ALWAYS requires one task ID"));
+        // Tasks rules
+        assert!(content.contains("Write descriptive task descriptions"));
     }
 }

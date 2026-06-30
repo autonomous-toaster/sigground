@@ -1,6 +1,6 @@
-# sigground — Ground Natural Language Into System Signatures
+# groundcontrol — Ground Natural Language Into System Signatures
 
-**sigground** checks whether natural-language requirement statements can be grounded to a plan's task vocabulary. It is a companion to [veriplan](https://github.com/autonomous-toaster/veriplan): veriplan verifies plan *structure* (task ordering, temporal constraints), while sigground verifies that the *language* used in requirements actually refers to real tasks.
+**groundcontrol** checks whether natural-language requirement statements can be grounded to a plan's task vocabulary. It is a companion to [veriplan](https://github.com/autonomous-toaster/veriplan): veriplan verifies plan *structure* (task ordering, temporal constraints), while groundcontrol verifies that the *language* used in requirements actually refers to real tasks.
 
 Based on the paper [*GinSign: Grounding Natural Language Into System Signatures for Temporal Logic Translation*](https://arxiv.org/abs/2512.16770) (arXiv:2512.16770).
 
@@ -17,7 +17,7 @@ veriplan reads OpenSpec plans and checks whether temporal constraints hold. But 
 
 When a requirement uses descriptions instead of explicit task IDs, veriplan marks it `PatternUngrounded` and blocks. The LLM (pi) gets a generic error but no guidance on *what* to fix.
 
-sigground solves this by formalizing the plan's vocabulary as a **system signature** and checking whether each NL statement can be grounded to it.
+groundcontrol solves this by formalizing the plan's vocabulary as a **system signature** and checking whether each NL statement can be grounded to it.
 
 ---
 
@@ -53,7 +53,7 @@ Output: BEFORE(T2.1, T2.2) @ 0.72  (ambiguous — used aliases, not explicit IDs
 
 ### 3. Produce Directives for the LLM
 
-When grounding is ambiguous or fails, sigground outputs structured directives telling the LLM exactly what to fix:
+When grounding is ambiguous or fails, groundcontrol outputs structured directives telling the LLM exactly what to fix:
 
 ```
 ✗ specs/ordering/spec.md#L12
@@ -70,14 +70,14 @@ When grounding is ambiguous or fails, sigground outputs structured directives te
 ┌──────────────────────────────────────────────────────────────┐
 │  pi (LLM coding assistant)                                   │
 │                                                               │
-│  writes plan → sigground check → veriplan check → loop or done
+│  writes plan → groundcontrol check → veriplan check → loop or done
 │                                                               │
-│  sigground:  "these NL specs are ambiguous, fix them first"   │
+│  groundcontrol:  "these NL specs are ambiguous, fix them first"   │
 │  veriplan:   "these temporal constraints are violated"         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-| | veriplan | sigground |
+| | veriplan | groundcontrol |
 |---|---|---|
 | **What it checks** | Plan structure (task ordering, phases, LTL) | NL phrasing (can specs be grounded to tasks?) |
 | **Input** | OpenSpec markdown (tasks.md, specs/) | Same OpenSpec markdown |
@@ -85,7 +85,7 @@ When grounding is ambiguous or fails, sigground outputs structured directives te
 | **When it runs** | After specs are well-grounded | Before veriplan, as a pre-check |
 | **Exit codes** | 0 = valid, 1 = violations | 0 = all grounded, 1 = issues found |
 
-The two tools are independent — sigground has no dependency on veriplan. They share the same input format (OpenSpec) but have separate parsers and output different things.
+The two tools are independent — groundcontrol has no dependency on veriplan. They share the same input format (OpenSpec) but have separate parsers and output different things.
 
 ---
 
@@ -93,16 +93,16 @@ The two tools are independent — sigground has no dependency on veriplan. They 
 
 ```bash
 # Check grounding quality (default: human-readable)
-sigground check my-change
+groundcontrol check my-change
 
 # JSON output for machine consumption
-sigground check my-change --format json
+groundcontrol check my-change --format json
 
 # Emit the signature JSON
-sigground signature my-change
+groundcontrol signature my-change
 
 # Check by path instead of change name
-sigground check ./openspec/changes/my-change
+groundcontrol check ./openspec/changes/my-change
 ```
 
 ### Exit Codes
@@ -136,7 +136,7 @@ Summary: 3 total | 2 grounded | 0 ambiguous | 1 ungroundable
 
 ## How It Differs From the Paper
 
-[GinSign](https://arxiv.org/abs/2512.16770) uses a BERT-based classifier for hierarchical predicate-then-argument grounding. sigground uses a **rule-based grounder** (keyword matching + positional heuristics) with no ML dependency. This is sufficient for structured OpenSpec specs that use explicit task IDs and temporal keywords. A learned grounder can be added later via the `Grounder` trait.
+[GinSign](https://arxiv.org/abs/2512.16770) uses a BERT-based classifier for hierarchical predicate-then-argument grounding. groundcontrol uses a **rule-based grounder** (keyword matching + positional heuristics) with no ML dependency. This is sufficient for structured OpenSpec specs that use explicit task IDs and temporal keywords. A learned grounder can be added later via the `Grounder` trait.
 
 ---
 
